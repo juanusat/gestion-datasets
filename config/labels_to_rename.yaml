@@ -1,0 +1,50 @@
+dataset001:
+  0: "casco"
+  1: "guantes"
+  2: "chaleco"
+  3: "botas"
+  4: "gafas"
+  5: "ninguno"
+  6: "persona"
+  7: "sin_casco"
+  8: "sin_gafas"
+  9: "sin_guantes"
+  10: "sin_botas"
+
+dataset002:
+  0: "volquete"
+  1: "minicargador"
+  2: "minicargador"
+  3: "mezcladora"
+  4: "estructura_metalica"
+  5: "brazo_grua"
+  6: "camion"
+  7: "persona"
+
+dataset003:
+  0: "botas"
+  1: "casco"
+  2: "chaleco"
+  3: "gafas"
+  4: "guantes"
+  5: "protector"
+  6: "tapabocas"
+
+dataset004:
+  0: "cabeza"
+  1: "casco"
+  2: "casco"
+  3: "chaleco "
+  4: "persona"
+
+dataset005:
+  0: "cabeza"
+  1: "casco"
+  2: "chaleco"
+  3: "persona"
+
+dataset006:
+  0: "persona"
+  1: "persona"
+  2: "persona"
+  3: "persona"

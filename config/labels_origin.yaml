@@ -1,0 +1,51 @@
+dataset001:
+  0: "helmet"
+  1: "gloves"
+  2: "vest"
+  3: "boots"
+  4: "goggles"
+  5: "none"
+  6: "Person"
+  7: "no_helmet"
+  8: "no_goggle"
+  9: "no_gloves"
+  10: "no_boots"
+
+dataset002:
+  0: ""
+  1: ""
+  2: ""
+  3: ""
+  4: ""
+  5: ""
+  6: ""
+  7: ""
+
+dataset003:
+  0: "Botas"
+  1: "Casco"
+  2: "Chaleco"
+  3: "Gafas"
+  4: "Guantes"
+  5: "Protector"
+  6: "tapabocas"
+
+dataset004:
+  0: "head"
+  1: "helmet"
+  2: "hi-viz helmet"
+  3: "hi-viz vest"
+  4: "person"
+
+dataset005:
+  0: "Head"
+  1: "Helmet"
+  2: "Vest"
+  3: "Worker"
+
+dataset006:
+  0: "W"
+  1: "WH"
+  2: "WHV"
+  3: "WV"
+
