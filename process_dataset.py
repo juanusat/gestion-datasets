@@ -203,30 +203,80 @@ def mix_dataset(ratios, src_dir="my_dataset/full", dest_dir="my_dataset/mixed"):
         print(f"Error: La ruta '{src_img_dir}' no existe. Ejecuta primero la unificación.")
         return
 
-    images = [f for f in src_img_dir.glob("*") if f.suffix.lower() in IMG_EXTENSIONS]
-    random.shuffle(images)
+    classes_file = src_path / "classes.txt"
+    class_names = []
+    if classes_file.exists():
+        with open(classes_file, "r", encoding="utf-8") as f:
+            class_names = [line.strip() for line in f if line.strip()]
 
-    total_imgs = len(images)
-    n_train = int(total_imgs * (train_pct / 100.0))
-    n_val = int(total_imgs * (val_pct / 100.0))
+    class_to_images = defaultdict(list)
+    all_images = set()
+
+    for img_p in src_img_dir.glob("*"):
+        if img_p.suffix.lower() not in IMG_EXTENSIONS:
+            continue
+        all_images.add(img_p)
+        lbl_p = src_lbl_dir / f"{img_p.stem}.txt"
+        if lbl_p.exists():
+            try:
+                with open(lbl_p, "r", encoding="utf-8") as f:
+                    file_cls = set()
+                    for line in f:
+                        parts = line.strip().split()
+                        if parts and parts[0].isdigit():
+                            file_cls.add(int(parts[0]))
+                    for cid in file_cls:
+                        class_to_images[cid].append(img_p)
+            except Exception:
+                pass
+
+    assigned_split = {}
+
+    for cid in sorted(class_to_images.keys()):
+        imgs_of_cls = class_to_images[cid]
+        unassigned = [img for img in imgs_of_cls if img not in assigned_split]
+        random.shuffle(unassigned)
+
+        total_u = len(unassigned)
+        if total_u == 0:
+            continue
+
+        n_tr = int(total_u * (train_pct / 100.0))
+        n_va = int(total_u * (val_pct / 100.0))
+
+        for img in unassigned[:n_tr]:
+            assigned_split[img] = "train"
+        for img in unassigned[n_tr:n_tr + n_va]:
+            assigned_split[img] = "val"
+        for img in unassigned[n_tr + n_va:]:
+            assigned_split[img] = "test"
+
+    remaining_unassigned = [img for img in all_images if img not in assigned_split]
+    random.shuffle(remaining_unassigned)
+    tot_rem = len(remaining_unassigned)
+    n_tr = int(tot_rem * (train_pct / 100.0))
+    n_va = int(tot_rem * (val_pct / 100.0))
+
+    for img in remaining_unassigned[:n_tr]:
+        assigned_split[img] = "train"
+    for img in remaining_unassigned[n_tr:n_tr + n_va]:
+        assigned_split[img] = "val"
+    for img in remaining_unassigned[n_tr + n_va:]:
+        assigned_split[img] = "test"
 
     splits = {
-        "train": images[:n_train],
-        "val": images[n_train:n_train + n_val],
-        "test": images[n_train + n_val:]
+        "train": [],
+        "val": [],
+        "test": []
     }
+    for img_p, split_name in assigned_split.items():
+        splits[split_name].append(img_p)
 
     split_class_counts = {
         "train": defaultdict(int),
         "val": defaultdict(int),
         "test": defaultdict(int)
     }
-
-    classes_file = src_path / "classes.txt"
-    class_names = []
-    if classes_file.exists():
-        with open(classes_file, "r", encoding="utf-8") as f:
-            class_names = [line.strip() for line in f if line.strip()]
 
     for split_name, img_list in splits.items():
         for img_p in img_list:
@@ -240,8 +290,7 @@ def mix_dataset(ratios, src_dir="my_dataset/full", dest_dir="my_dataset/mixed"):
                             parts = line.strip().split()
                             if parts and parts[0].isdigit():
                                 cid = int(parts[0])
-                                cname = class_names[cid] if cid < len(class_names) else str(cid)
-                                split_class_counts[split_name][cname] += 1
+                                split_class_counts[split_name][cid] += 1
                 except Exception:
                     pass
 
@@ -249,37 +298,49 @@ def mix_dataset(ratios, src_dir="my_dataset/full", dest_dir="my_dataset/mixed"):
     if data_yaml_src.exists():
         shutil.copy2(data_yaml_src, dest_path / "data.yaml")
 
+    classes_file_src = src_path / "classes.txt"
+    if classes_file_src.exists():
+        shutil.copy2(classes_file_src, dest_path / "classes.txt")
+
+    total_imgs = len(all_images)
     stats_md_path = dest_path / "stats.md"
     lines = []
-    lines.append(f"# Métricas de Partición (`-c {' '.join(map(str, ratios))}`)\n\n")
+    lines.append(f"# Métricas de Partición Estratificada (`-c {' '.join(map(str, ratios))}`)\n\n")
     lines.append("## Resumen de Imágenes\n\n")
     lines.append(f"- **Total de imágenes**: {total_imgs}\n")
-    lines.append(f"- **Train**: {len(splits['train'])} imágenes ({train_pct}%)\n")
-    lines.append(f"- **Val**: {len(splits['val'])} imágenes ({val_pct}%)\n")
-    lines.append(f"- **Test**: {len(splits['test'])} imágenes ({test_pct}%)\n\n")
+    lines.append(f"- **Train**: {len(splits['train'])} imágenes ({len(splits['train'])/max(1,total_imgs)*100:.1f}%)\n")
+    lines.append(f"- **Val**: {len(splits['val'])} imágenes ({len(splits['val'])/max(1,total_imgs)*100:.1f}%)\n")
+    lines.append(f"- **Test**: {len(splits['test'])} imágenes ({len(splits['test'])/max(1,total_imgs)*100:.1f}%)\n\n")
 
     lines.append("## Conteo de Anotaciones por Clase\n\n")
-    lines.append("| Clase | Train | Val | Test | Total |\n")
-    lines.append("| --- | --- | --- | --- | --- |\n")
+    lines.append("| ID Clase | Nombre de Clase | Train | Val | Test | Total |\n")
+    lines.append("| --- | --- | --- | --- | --- | --- |\n")
 
-    all_cls = class_names if class_names else sorted(list(set(c for s in split_class_counts.values() for c in s.keys())))
+    all_cls_ids = sorted(list(set(cid for s in split_class_counts.values() for cid in s.keys())))
+    if class_names:
+        for idx in range(len(class_names)):
+            if idx not in all_cls_ids:
+                all_cls_ids.append(idx)
+        all_cls_ids = sorted(list(set(all_cls_ids)))
+
     tot_train = 0
     tot_val = 0
     tot_test = 0
 
-    for cname in all_cls:
-        tr = split_class_counts["train"][cname]
-        va = split_class_counts["val"][cname]
-        te = split_class_counts["test"][cname]
+    for cid in all_cls_ids:
+        cname = class_names[cid] if cid < len(class_names) else f"Clase_{cid}"
+        tr = split_class_counts["train"][cid]
+        va = split_class_counts["val"][cid]
+        te = split_class_counts["test"][cid]
         tot = tr + va + te
 
         tot_train += tr
         tot_val += va
         tot_test += te
 
-        lines.append(f"| {cname} | {tr} | {va} | {te} | {tot} |\n")
+        lines.append(f"| {cid} | {cname} | {tr} | {va} | {te} | {tot} |\n")
 
-    lines.append(f"| **TOTAL** | **{tot_train}** | **{tot_val}** | **{tot_test}** | **{tot_train + tot_val + tot_test}** |\n")
+    lines.append(f"| **TOTAL** | - | **{tot_train}** | **{tot_val}** | **{tot_test}** | **{tot_train + tot_val + tot_test}** |\n")
 
     with open(stats_md_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
