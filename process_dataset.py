@@ -348,16 +348,172 @@ def mix_dataset(ratios, src_dir="my_dataset/full", dest_dir="my_dataset/mixed"):
     print(f"Mezcla y partición completada con éxito en '{dest_dir}'.")
     print(f"Estadísticas guardadas en '{stats_md_path}'.")
 
+def augment_dataset(pct, target_dir="my_dataset/full"):
+    try:
+        import cv2
+        import albumentations as A
+    except ImportError:
+        print("Error: Para transformaciones se requiere 'albumentations' y 'opencv-python'.")
+        return
+
+    target_path = Path(target_dir)
+    img_dir = target_path / "images"
+    lbl_dir = target_path / "labels"
+
+    if not img_dir.exists():
+        print(f"Error: No se encontro el directorio {img_dir}. Ejecuta primero la unificacion (-u).")
+        return
+
+    # Cargar nombres de clases para el reporte
+    class_names = {}
+    classes_file = target_path / "classes.txt"
+    if classes_file.exists():
+        with open(classes_file, "r", encoding="utf-8") as f:
+            class_names = {idx: line.strip() for idx, line in enumerate(f) if line.strip()}
+
+    # 1. Identificar solo las imágenes originales (evitar transformar las ya transformadas)
+    original_images = []
+    for img_p in img_dir.glob("*"):
+        if img_p.suffix.lower() not in IMG_EXTENSIONS:
+            continue
+        if img_p.name.startswith("transform_"):
+            continue
+        original_images.append(img_p)
+
+    # 2. Calcular cantidad a transformar
+    num_to_augment = int(len(original_images) * (pct / 100.0))
+    print(f"Aplicando Data Augmentation al {pct}% de las imagenes ({num_to_augment} nuevas muestras)...")
+    images_to_augment = random.sample(original_images, num_to_augment)
+
+    # 3. Pipeline de Albumentations
+    transform = A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.1),
+        A.RandomBrightnessContrast(p=0.5, brightness_limit=0.2, contrast_limit=0.2),
+        A.Sharpen(p=0.3),
+        A.Affine(scale=(0.8, 1.2), rotate=(-15, 15), p=0.5)
+    ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels'], min_visibility=0.2))
+
+    # 4. Estructuras para estadisticas
+    original_class_counts = defaultdict(int)
+    augmented_class_counts = defaultdict(int)
+
+    # Contar cajas originales (para el archivo .md)
+    for lbl_p in lbl_dir.glob("*.txt"):
+        if lbl_p.name == "classes.txt" or lbl_p.name == "data.yaml": continue
+        if lbl_p.name.startswith("transform_"): continue
+        try:
+            with open(lbl_p, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if parts and parts[0].isdigit():
+                        original_class_counts[int(parts[0])] += 1
+        except: pass
+
+    augmented_count = 0
+    for img_p in images_to_augment:
+        lbl_p = lbl_dir / f"{img_p.stem}.txt"
+        if not lbl_p.exists():
+            continue
+
+        image = cv2.imread(str(img_p))
+        if image is None:
+            continue
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        bboxes, class_labels = [], []
+        with open(lbl_p, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5 and parts[0].isdigit():
+                    x_c, y_c, w, h = map(float, parts[1:5])
+                    # Correccion segura de limites (clipping)
+                    x_min = max(0.0, x_c - w / 2.0)
+                    y_min = max(0.0, y_c - h / 2.0)
+                    x_max = min(1.0, x_c + w / 2.0)
+                    y_max = min(1.0, y_c + h / 2.0)
+                    
+                    w_new = x_max - x_min
+                    h_new = y_max - y_min
+                    x_c_new = x_min + (w_new / 2.0)
+                    y_c_new = y_min + (h_new / 2.0)
+                    
+                    if w_new > 0.001 and h_new > 0.001:
+                        bboxes.append([round(x_c_new, 6), round(y_c_new, 6), round(w_new, 6), round(h_new, 6)])
+                        class_labels.append(int(parts[0]))
+
+        if not bboxes:
+            continue
+
+        try:
+            transformed = transform(image=image, bboxes=bboxes, class_labels=class_labels)
+            t_image = cv2.cvtColor(transformed['image'], cv2.COLOR_RGB2BGR)
+            t_bboxes = transformed['bboxes']
+            t_classes = transformed['class_labels']
+
+            if not t_bboxes:
+                continue
+
+            # Guardar nueva imagen en full/images
+            new_img_name = f"transform_{img_p.name}"
+            cv2.imwrite(str(img_dir / new_img_name), t_image)
+
+            # Guardar nueva etiqueta en full/labels
+            new_lbl_name = f"transform_{img_p.stem}.txt"
+            with open(lbl_dir / new_lbl_name, 'w', encoding='utf-8') as f:
+                for bbox, cls_lbl in zip(t_bboxes, t_classes):
+                    f.write(f"{cls_lbl} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}\n")
+                    augmented_class_counts[cls_lbl] += 1  # Contar nuevas anotaciones generadas
+            
+            augmented_count += 1
+        except Exception as e:
+            print(f"Error transformando {img_p.name}: {e}")
+
+    # 5. Generar reporte estadistico
+    stats_path = target_path / "stats_transform.md"
+    with open(stats_path, "w", encoding="utf-8") as f:
+        f.write("# Estadisticas de Data Augmentation\n\n")
+        f.write(f"- **Porcentaje aplicado**: {pct}%\n")
+        f.write(f"- **Nuevas imagenes generadas**: {augmented_count}\n")
+        f.write(f"- **Total de imagenes ahora en full**: {len(original_images) + augmented_count}\n\n")
+        
+        f.write("| ID | Nombre de Clase | Anotaciones Originales | Anotaciones Generadas | Total Final |\n")
+        f.write("|---|---|---|---|---|\n")
+        
+        all_cls_ids = sorted(list(set(list(original_class_counts.keys()) + list(augmented_class_counts.keys()))))
+        total_orig = total_aug = total_all = 0
+        
+        for cid in all_cls_ids:
+            cname = class_names.get(cid, f"Clase_{cid}")
+            orig = original_class_counts[cid]
+            aug = augmented_class_counts[cid]
+            tot = orig + aug
+            
+            total_orig += orig
+            total_aug += aug
+            total_all += tot
+            
+            f.write(f"| {cid} | {cname} | {orig} | {aug} | {tot} |\n")
+            
+        f.write(f"| **-** | **TOTALES** | **{total_orig}** | **{total_aug}** | **{total_all}** |\n")
+
+    print(f"\n¡Procedimiento finalizado!")
+    print(f"Se inyectaron {augmented_count} imagenes directamente a '{target_dir}'.")
+    print(f"El reporte de clases creadas fue guardado en '{stats_path}'.")
+
 def main():
-    parser = argparse.ArgumentParser(description="Script para unificar datasets y generar particiones train/val/test.")
+    parser = argparse.ArgumentParser(description="Script para unificar, aumentar datasets y generar particiones train/val/test.")
     parser.add_argument("-u", "--unify", action="store_true", help="Unificar datasets de origins/ a my_dataset/full")
+    parser.add_argument("-t", "--transform", type=int, metavar="PCT", help="Generar un PCT%% de transformaciones offline hacia my_dataset/_transformacion (ej: -t 15)")
     parser.add_argument("-c", "--split", nargs=3, type=int, metavar=('TRAIN', 'VAL', 'TEST'),
-                        help="Mezclar y dividir my_dataset/full hacia my_dataset/mixed (ej: -c 70 20 10)")
+                        help="Mezclar y dividir hacia my_dataset/mixed (ej: -c 70 20 10)")
     
     args = parser.parse_args()
 
     if args.unify:
         build_unified_dataset()
+    elif args.transform is not None:
+        augment_dataset(args.transform)
     elif args.split:
         mix_dataset(args.split)
     else:

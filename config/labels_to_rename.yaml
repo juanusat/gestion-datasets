@@ -4,7 +4,7 @@ dataset001:
   2: "chaleco"
   3: "botas"
   4: "gafas"
-  5: "ninguno"
+  5: "sin_chaleco"
   6: "persona"
   7: "sin_casco"
   8: "sin_gafas"
@@ -31,14 +31,14 @@ dataset003:
   6: "tapabocas"
 
 dataset004:
-  0: "cabeza"
+  0: "sin_casco"
   1: "casco"
   2: "casco"
   3: "chaleco "
   4: "persona"
 
 dataset005:
-  0: "cabeza"
+  0: "sin_casco"
   1: "casco"
   2: "chaleco"
   3: "persona"

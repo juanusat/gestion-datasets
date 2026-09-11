@@ -1,11 +1,6 @@
 list:
-- botas
-- cabeza
-- casco
-- chaleco
-- gafas
-- guantes
-- persona
 - sin_botas
 - sin_casco
+- sin_chaleco
+- sin_gafas
 - sin_guantes
