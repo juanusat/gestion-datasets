@@ -2,3 +2,5 @@ origins/
 my_dataset/
 xk-*/
 /*.txt
+*.pyc
+__pycache__/
