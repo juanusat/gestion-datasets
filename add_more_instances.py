@@ -369,12 +369,12 @@ def balance_and_select_candidates(
     classes: List[str],
     threshold: int = 25,
     compensate_mode: Optional[int] = 0,
-) -> Tuple[List[Dict[str, Any]], Dict[int, int], Dict[int, int], Dict[int, int]]:
+) -> Tuple[List[Dict[str, Any]], Dict[int, int], Dict[int, int], Dict[int, int], Set[int]]:
     """
-    Calcula objetivos de balanceo con tolerancia +-threshold e identifica aleatoriamente
-    el conjunto optimo de candidatos a incorporar.
-    - Si compensate_mode == 0: la meta base es la clase con mas instancias de forma natural.
-    - Si compensate_mode > 0: la meta base es ese valor especifico (ej. 1200).
+    Calcula objetivos de balanceo con tolerancia +-threshold e identifica de forma óptima
+    el conjunto de candidatos a incorporar sin sobrepasar clases que ya alcanzaron su meta.
+    - Si compensate_mode == 0: la meta base es la clase con más instancias de forma natural.
+    - Si compensate_mode > 0: la meta base es ese valor específico (ej. 1200).
     """
     class_to_id = {c: i for i, c in enumerate(classes)}
     current_by_id = {class_to_id[c]: current_counts.get(c, 0) for c in classes}
@@ -384,21 +384,34 @@ def balance_and_select_candidates(
     else:
         base_target = compensate_mode
 
-    # Generar objetivo aleatorio por clase dentro del umbral [-threshold, +threshold]
+    # Generar objetivo por clase con umbral aleatorio [-threshold, +threshold]
+    # y fijar techo estricto (max_allowed) para no inflar clases ya satisfechas
     targets: Dict[int, int] = {}
+    max_allowed: Dict[int, int] = {}
     for cid in range(len(classes)):
         offset = random.randint(-threshold, threshold)
-        targets[cid] = max(current_by_id[cid], base_target + offset)
+        if current_by_id[cid] > base_target:
+            # La clase ya supera la meta base deseada: se mantiene y no debe exceder su inicial + threshold
+            targets[cid] = current_by_id[cid]
+            max_allowed[cid] = current_by_id[cid] + threshold
+        else:
+            targets[cid] = max(current_by_id[cid], base_target + offset)
+            max_allowed[cid] = targets[cid] + threshold
 
-    # Seleccion voraz y aleatorizada
+    # Selección voraz optimizada con restricción estricta de sobrepaso
     sim_counts = dict(current_by_id)
     added_counts = defaultdict(int)
     selected_candidates: List[Dict[str, Any]] = []
     available = list(candidates)
     random.shuffle(available)
+    exhausted_classes: Set[int] = set()
 
     while True:
-        deficits = {cid: targets[cid] - sim_counts[cid] for cid in range(len(classes))}
+        deficits = {
+            cid: targets[cid] - sim_counts[cid]
+            for cid in range(len(classes))
+            if cid not in exhausted_classes
+        }
         active_deficits = {cid: d for cid, d in deficits.items() if d > 0}
 
         if not active_deficits:
@@ -410,20 +423,36 @@ def balance_and_select_candidates(
         for cid in sorted_deficits:
             matching = [c for c in available if cid in c["class_counts"]]
             if not matching:
+                exhausted_classes.add(cid)
                 continue
 
             well_suited = []
             for cand in matching:
                 overshoot = False
                 for other_cid, count in cand["class_counts"].items():
-                    if other_cid != cid and (sim_counts[other_cid] + count) > (targets[other_cid] + threshold):
+                    if (sim_counts[other_cid] + count) > max_allowed[other_cid]:
                         overshoot = True
                         break
                 if not overshoot:
                     well_suited.append(cand)
 
-            pool_to_pick = well_suited if well_suited else matching
-            picked = random.choice(pool_to_pick)
+            if not well_suited:
+                # No hay candidatos que puedan aportar a cid sin sobrepasar alguna otra clase
+                exhausted_classes.add(cid)
+                continue
+
+            # Priorizar candidatos que aporten menor penalización en clases sin déficit
+            def candidate_cost(cand):
+                cost = 0
+                for c_id, cnt in cand["class_counts"].items():
+                    if c_id not in active_deficits:
+                        cost += cnt * 10
+                return cost
+
+            well_suited.sort(key=candidate_cost)
+            min_cost = candidate_cost(well_suited[0])
+            best_pool = [c for c in well_suited if candidate_cost(c) == min_cost]
+            picked = random.choice(best_pool)
             break
 
         if picked is None:
@@ -436,7 +465,7 @@ def balance_and_select_candidates(
             sim_counts[cid] += count
             added_counts[cid] += count
 
-    return selected_candidates, targets, dict(added_counts), sim_counts
+    return selected_candidates, targets, dict(added_counts), sim_counts, exhausted_classes
 
 
 def apply_candidate_transfer(
@@ -475,6 +504,7 @@ def print_summary_report(
     selected_candidates: List[Dict[str, Any]],
     threshold: int,
     compensate_mode: Optional[int],
+    exhausted_classes: Optional[Set[int]] = None,
     dry_run: bool = False
 ):
     """Muestra el reporte estructurado en consola."""
@@ -488,16 +518,16 @@ def print_summary_report(
     mode_str = "[MODO SIMULACIÓN --dry-run]" if dry_run else "[EJECUCIÓN COMPLETADA]"
     target_info = "Equiparar a clase máxima" if (compensate_mode is None or compensate_mode == 0) else f"Meta fija {compensate_mode}"
 
-    print(f"\n{'='*95}")
+    print(f"\n{'='*100}")
     print(f"📊 REPORTE DE BALANCEO E INCORPORACIÓN DE INSTANCIAS (__plus) {mode_str}")
-    print(f"{'='*95}")
+    print(f"{'='*100}")
     print(f"• Modo de compensación: {target_info}")
     print(f"• Total de nuevas imágenes incorporadas a fotos/: {len(selected_candidates)}")
     print(f"• Umbral aleatorio de tolerancia: ±{threshold} instancias")
     print()
 
-    header = f"{'ID':<4} | {'Clase':<16} | {'Inicial':<10} | {'Meta (±25)':<12} | {'Inst. Agregadas':<16} | {'Img. Agregadas':<15} | {'Final':<10} | {'Estado':<12}"
-    divider = f"{'-'*4}-+-{'-'*16}-+-{'-'*10}-+-{'-'*12}-+-{'-'*16}-+-{'-'*15}-+-{'-'*10}-+-{'-'*12}"
+    header = f"{'ID':<4} | {'Clase':<16} | {'Inicial':<10} | {f'Meta (±{threshold})':<14} | {'Inst. Agregadas':<16} | {'Img. Agregadas':<15} | {'Final':<10} | {'Estado':<15}"
+    divider = f"{'-'*4}-+-{'-'*16}-+-{'-'*10}-+-{'-'*14}-+-{'-'*16}-+-{'-'*15}-+-{'-'*10}-+-{'-'*15}"
     print(header)
     print(divider)
 
@@ -519,13 +549,25 @@ def print_summary_report(
         elif diff > threshold:
             status = f"+{diff} Excedida"
         else:
-            status = f"{diff} Déficit"
+            if exhausted_classes and cid in exhausted_classes:
+                status = f"{diff} Agotada"
+            else:
+                status = f"{diff} Déficit"
 
-        print(f"{idx:<4} | {cname:<16} | {init_c:<10} | {tgt_c:<12} | {add_c:<16} | {add_img:<15} | {fin_c:<10} | {status:<12}")
+        print(f"{idx:<4} | {cname:<16} | {init_c:<10} | {tgt_c:<14} | {add_c:<16} | {add_img:<15} | {fin_c:<10} | {status:<15}")
 
     print(divider)
-    print(f"{'':<4}   {'TOTAL':<16} | {total_init:<10} | {'-':<12} | {total_added_inst:<16} | {len(selected_candidates):<15} | {total_final:<10} |")
-    print(f"{'='*95}\n")
+    print(f"{'':<4}   {'TOTAL':<16} | {total_init:<10} | {'-':<14} | {total_added_inst:<16} | {len(selected_candidates):<15} | {total_final:<10} |")
+    print(f"{'='*100}\n")
+
+    if exhausted_classes:
+        print("⚠️  AVISO DE DISPONIBILIDAD DE CANDIDATOS:")
+        for cid in sorted(exhausted_classes):
+            cname = classes[cid]
+            d = targets[cid] - final_counts.get(cid, initial_counts.get(cname, 0))
+            print(f"  • {cname}: Se agotaron los candidatos viables en 'origins/' (déficit de {d} instancias respecto a meta).")
+            print(f"    No se agregaron más imágenes porque sobrepasarían las clases ya satisfechas.")
+        print()
 
 
 def main():
@@ -651,7 +693,7 @@ def main():
     print(f"✓ Se indexaron {len(candidates)} candidatos disponibles con anotaciones preservadas.")
 
     # 7. Ejecutar algoritmo de balanceo y selección
-    selected, targets, added_counts, final_sim_counts = balance_and_select_candidates(
+    selected, targets, added_counts, final_sim_counts, exhausted_classes = balance_and_select_candidates(
         candidates=candidates,
         current_counts=fotos_stats["class_counts"],
         classes=classes,
@@ -660,7 +702,13 @@ def main():
     )
 
     if not selected:
-        print("\n✓ Las clases ya se encuentran equilibradas dentro del umbral. No se requieren imágenes adicionales.")
+        if exhausted_classes:
+            print("\n⚠️ No se seleccionaron imágenes de apoyo:")
+            print("Los candidatos disponibles en 'origins/' sobrepasarían las clases que ya alcanzaron su meta.")
+            for cid in sorted(exhausted_classes):
+                print(f"  • {classes[cid]}: agotada sin candidatos viables respetando el umbral ±{args.threshold}.")
+        else:
+            print("\n✓ Las clases ya se encuentran equilibradas dentro del umbral. No se requieren imágenes adicionales.")
         sys.exit(0)
 
     # 8. Transferir / escribir archivos
@@ -676,6 +724,7 @@ def main():
         selected_candidates=selected,
         threshold=args.threshold,
         compensate_mode=compensate_val,
+        exhausted_classes=exhausted_classes,
         dry_run=args.dry_run
     )
 
